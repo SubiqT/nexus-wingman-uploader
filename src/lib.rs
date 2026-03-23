@@ -270,6 +270,10 @@ fn get_new_logs(logs: &mut Vec<arcdpslog::Log>) {
     while let Ok(iter) = file_rx.next_log() {
         for l in iter {
             log::info!("New log found: {}", l.display());
+            let cpath = common::path_to_cstring(&l);
+            EV_LOG_DETECTED.raise(&LogDetectedEvent {
+                file_path: cpath.as_ptr(),
+            });
             logs.push(arcdpslog::Log::new(l));
         }
     }
@@ -279,6 +283,14 @@ fn update_logs(logs: &mut [arcdpslog::Log]) {
     while let Some(WorkerMessage { index, payload }) = STATE.try_next_producer() {
         match payload {
             WorkerType::Evtc(evtc) => {
+                if let Ok(ref enc) = evtc {
+                    let cpath = common::path_to_cstring(&logs[index].location);
+                    EV_LOG_PARSED.raise(&LogParsedEvent {
+                        file_path: cpath.as_ptr(),
+                        boss_id: enc.header.boss_id,
+                        player_count: enc.agents.len() as u32,
+                    });
+                }
                 logs[index].evtc = Step::from_value(evtc);
             }
             WorkerType::DpsReport(r) => match r {
@@ -293,6 +305,15 @@ fn update_logs(logs: &mut [arcdpslog::Log]) {
                             log::error!("Failed to store settings: {e}");
                         });
                     };
+                    let cpath = common::path_to_cstring(&logs[index].location);
+                    let cpermalink =
+                        std::ffi::CString::new(r.permalink.as_str()).unwrap_or_default();
+                    EV_DPSREPORT.raise(&DpsReportEvent {
+                        file_path: cpath.as_ptr(),
+                        permalink: cpermalink.as_ptr(),
+                        boss_id: r.encounter.boss_id,
+                        success: r.encounter.success,
+                    });
                     logs[index].dpsreport = Step::from_value(Ok(r));
                 }
                 Ok(Err(e)) => {
@@ -303,6 +324,18 @@ fn update_logs(logs: &mut [arcdpslog::Log]) {
                 }
             },
             WorkerType::Wingman(r) => {
+                if let Ok(accepted) = &r {
+                    let cpath = common::path_to_cstring(&logs[index].location);
+                    let boss_id = match &logs[index].evtc {
+                        Step::Done(enc) => enc.header.boss_id,
+                        _ => 0,
+                    };
+                    EV_WINGMAN.raise(&WingmanEvent {
+                        file_path: cpath.as_ptr(),
+                        boss_id,
+                        accepted: *accepted,
+                    });
+                }
                 logs[index].wingman = Step::from_value(r);
             }
         }
